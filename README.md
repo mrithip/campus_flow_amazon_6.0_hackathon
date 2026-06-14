@@ -61,7 +61,7 @@ The path to production AWS deployment is a straight line: containerize with Dock
 |---|---|
 | UI framework | Streamlit 1.x (Python 3.12) |
 | Database | SQLite — `campus.db` |
-| AI model | Google Gemini 1.5 Flash via `google-generativeai` SDK |
+| AI model | Google Gemini 2.5 Flash via `google-generativeai` SDK |
 | Password security | bcrypt (work factor 12) |
 | Environment config | python-dotenv |
 | Theme | Custom CSS + `.streamlit/config.toml` dark base |
