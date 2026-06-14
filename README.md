@@ -1,191 +1,277 @@
-# ⚡ CampusFlow — AI Operating System for Student Life
+# CampusFlow — AI Operating System for Student Life
 
-> *"From scattered information to a single intelligent interface — CampusFlow is your Jarvis on campus."*
-
----
-
-## 🏆 Hackathon Submission Pitch
-
-### Built on Amazon's Leadership Principles
-
-#### 1. Customer Obsession
-Every feature in CampusFlow was designed by starting with one central question: *What does a stressed engineering student actually need in their day?* Not another notification app. Not another portal to remember credentials for. They need a **single intelligent assistant** that understands their schedule, their hunger, their deadlines, and their GPA — and proactively surfaces what matters, exactly when it matters.
-
-- A student with 72% attendance gets a red warning badge **without asking**.
-- Lunch menu appears on the dashboard at noon **without navigating anywhere**.
-- The next class is always visible, pulling from their specific department's real timetable.
-- JARVIS — the conversational AI brain — connects the dots between all data sources so the student only needs to ask naturally: *"Do I have any labs today?"*
-
-This is Customer Obsession in code: we removed every unnecessary step between the student and the answer.
-
-#### 2. Invent and Simplify
-Campus information is notoriously fragmented — timetables on notice boards, menus on WhatsApp groups, events on posters. CampusFlow replaces this chaos with a radical simplification:
-
-- **One SQLite database** as the single source of truth for all campus data.
-- **One Streamlit interface** combining dashboard, schedule, events, and chat.
-- **One AI model (Gemini)** that contextualizes all of this and responds conversationally.
-- **Zero cloud infrastructure** required for the prototype — runs entirely on a laptop.
-
-We didn't build complex microservices or require institutional IT buy-in. We invented a lean, local-first architecture that any campus can deploy in minutes — and that any student can start using without training.
+> A multi-tenant campus assistant that combines a live SQLite academic database with Google Gemini to deliver personalized, data-grounded answers to every student question.
 
 ---
 
-## 🚀 Features
+## Hackathon Submission — Amazon Leadership Principles
+
+### Customer Obsession
+
+Every decision in CampusFlow starts with one question: what does a stressed engineering student actually need right now? Not another app to install. Not another portal to log into. A single intelligent interface that already knows their schedule, their attendance risk, their upcoming deadlines, and what is being served for lunch — and answers in plain language.
+
+Concrete examples of this principle in the product:
+
+- A student whose Operating Systems attendance has dropped to 68% sees a red alert card the moment they open the dashboard — without asking for it.
+- The AI knows the exact number of classes they can still miss before hitting the institutional 75% cutoff, and says so when asked.
+- The mess menu shown is the one currently being served, not a static list — because the app reads the system clock and cross-references it against meal time windows.
+- When a student asks "Am I safe to take a leave this Friday?", the AI has already loaded their full attendance history, leave log, and upcoming exam schedule before formulating a response.
+
+### Invent and Simplify
+
+Campus data is fragmented by design — timetables live on notice boards, marks on a separate ERP portal, mess menus on WhatsApp groups, events on physical posters. CampusFlow replaces this with a single local database that every feature reads from.
+
+The AI architecture follows the same principle. Instead of a complex vector retrieval pipeline, the backend uses intent detection (keyword matching) to run targeted SQL queries and packs the results as structured plaintext into the Gemini prompt. The model reasons over real numbers, never guesses. The entire pattern requires no external services, no vector store, and no fine-tuning.
+
+### Multi-Tenant, Secure Architecture — Scalability on AWS
+
+CampusFlow v2 is built as a proper multi-tenant system from the ground up:
+
+- Every student record (attendance, marks, leaves) carries a `user_id` foreign key. No query returns data across tenant boundaries.
+- Passwords are hashed with bcrypt at work factor 12. Plaintext passwords are never stored or logged.
+- Session state is server-side (`st.session_state`), not URL parameters or cookies.
+- The database abstraction layer (`db.py`) isolates all SQL from the UI layer — swapping SQLite for PostgreSQL on Amazon RDS requires only the connection string.
+
+The path to production AWS deployment is a straight line: containerize with Docker, deploy on ECS Fargate, move the database to RDS, manage secrets through AWS Secrets Manager, and put an Application Load Balancer in front. The application code does not change.
+
+---
+
+## Features
 
 | Feature | Description |
 |---|---|
-| **Live Status Dashboard** | Real-time clock, next class, current mess menu, attendance alert, and nearest deadline — all on one screen |
-| **JARVIS Chatbot** | Gemini 1.5 Flash–powered assistant with campus DB context injection |
-| **Smart DB Queries** | App detects intent (food / class / event) and fetches the right DB rows before calling the AI |
-| **Student Profile Portal** | Sidebar form to save/update Name, Dept, Semester, GPA, and Attendance |
-| **Full Timetable View** | Expandable today's schedule for CSE, ECE, and MECH departments |
-| **Events & Deadlines Feed** | Color-coded upcoming events: hackathons, exams, assignments, workshops |
-| **Attendance Warning** | Visual badge turns red with explicit warning when attendance drops below 75% |
-| **Secure API Key Input** | Password-type Streamlit input — no keys ever hardcoded |
+| Secure authentication | bcrypt-hashed login and registration, scoped session tokens |
+| Multi-tenant data isolation | All records filtered by `user_id` — no cross-user data exposure |
+| Live status dashboard | Next class, current mess meal, overall attendance, nearest deadline |
+| Attendance alert system | Red alert card auto-renders when any subject falls below 75% |
+| College calendar integration | Today's date cross-referenced against official working days and holidays |
+| Subject-wise attendance tracker | Per-subject counts, computed percentages, low-attendance flagging |
+| Academic marks panel | Internal-1, Internal-2 scores per subject with average internals computed |
+| Leave application system | Submit leave from sidebar, view history with approval status |
+| BLACKY — AI chatbot | Gemini 1.5 Flash with full academic context injection per query |
+| Smart context builder | Keyword intent detection routes each query to the correct DB tables |
+| Tabbed detail panels | Schedule / Attendance / Marks / Leave History / Events in one view |
+| Environment credential loading | API key loaded from `.env` automatically; sidebar fallback for sessions |
 
 ---
 
-## 🗄️ Database Schema
-
-### `student_profile`
-| Column | Type | Description |
-|---|---|---|
-| id | INTEGER | Primary key |
-| name | TEXT | Student full name |
-| department | TEXT | CSE / ECE / MECH |
-| semester | INTEGER | 1–8 |
-| gpa | REAL | Current GPA |
-| attendance | REAL | Attendance % |
-| registered_events | TEXT | Comma-separated event names |
-
-### `timetables`
-| Column | Type | Description |
-|---|---|---|
-| department | TEXT | CSE / ECE / MECH |
-| day | TEXT | Monday – Saturday |
-| time_slot | TEXT | e.g. "09:00 AM - 10:00 AM" |
-| subject | TEXT | Subject name |
-| room | TEXT | Room / lab number |
-
-### `mess_menu`
-| Column | Type | Description |
-|---|---|---|
-| day | TEXT | Monday – Sunday |
-| meal_type | TEXT | Breakfast / Lunch / Snacks / Dinner |
-| time_window | TEXT | e.g. "12:00 PM - 02:00 PM" |
-| menu_items | TEXT | Full menu description |
-
-### `college_events`
-| Column | Type | Description |
-|---|---|---|
-| event_name | TEXT | Event title |
-| event_type | TEXT | Hackathon / Exam / Assignment / Workshop / etc. |
-| due_date | TEXT | YYYY-MM-DD |
-| description | TEXT | Full event description |
-| venue | TEXT | Location |
-| organizer | TEXT | Organizing body |
-
----
-
-## 🛠️ Tech Stack
+## Tech Stack
 
 | Layer | Technology |
 |---|---|
-| **Frontend / UI** | Streamlit 1.x (Python 3.12) |
-| **Database** | SQLite (`campus.db`) |
-| **AI Brain** | Google Gemini 1.5 Flash via `google-generativeai` SDK |
-| **Styling** | Custom CSS injected via `st.markdown` |
-| **Runtime** | Python 3.12, local virtual environment |
+| UI framework | Streamlit 1.x (Python 3.12) |
+| Database | SQLite — `campus.db` |
+| AI model | Google Gemini 1.5 Flash via `google-generativeai` SDK |
+| Password security | bcrypt (work factor 12) |
+| Environment config | python-dotenv |
+| Theme | Custom CSS + `.streamlit/config.toml` dark base |
 
 ---
 
-## ⚙️ Setup & Run
+## Database Schema
 
-### Prerequisites
-- Python 3.12
-- A Google Gemini API key (free at [aistudio.google.com](https://aistudio.google.com/))
+### Per-user tables (tenant-scoped)
 
-### 1. Activate the virtual environment
-```bash
-source .venv/bin/activate
-```
+**`users`**
+| Column | Type | Notes |
+|---|---|---|
+| id | INTEGER PK | Auto-increment |
+| username | TEXT UNIQUE | Case-insensitive |
+| password_hash | TEXT | bcrypt hash |
+| name | TEXT | Full name |
+| department | TEXT | CSE / ECE / MECH |
+| semester | INTEGER | 1–8 |
 
-### 2. Install dependencies
-```bash
-pip install streamlit google-generativeai
-```
+**`attendance_records`**
+| Column | Type | Notes |
+|---|---|---|
+| user_id | INTEGER FK | References users(id) |
+| subject_name | TEXT | Subject name |
+| total_classes_conducted | INTEGER | Classes held so far |
+| classes_attended | INTEGER | Classes attended |
 
-### 3. Initialize the database
-```bash
-python3.12 init_db.py
-```
-This creates `campus.db` and seeds all tables with realistic engineering college mock data.
+**`academic_marks`**
+| Column | Type | Notes |
+|---|---|---|
+| user_id | INTEGER FK | References users(id) |
+| subject_name | TEXT | Subject name |
+| exam_type | TEXT | Internal-1 / Internal-2 / End-Semester |
+| marks_obtained | REAL | Score |
+| total_marks | REAL | Out of (default 50) |
 
-### 4. Launch the app
-```bash
-streamlit run app.py
-```
+**`leave_applications`**
+| Column | Type | Notes |
+|---|---|---|
+| user_id | INTEGER FK | References users(id) |
+| leave_date | TEXT | YYYY-MM-DD |
+| reason | TEXT | Free text |
+| status | TEXT | Pending / Approved |
 
-### 5. Configure in the UI
-- Open `http://localhost:8501` in your browser
-- Paste your Gemini API key in the sidebar
-- Update your student profile
-- Start chatting with JARVIS!
+### Shared tables (institution-wide)
 
----
+**`timetables`** — Department, day, time slot, subject, room number (67 rows across CSE / ECE / MECH)
 
-## 💬 Example Jarvis Conversations
+**`mess_menu`** — Day, meal type, time window, full menu items (28 rows, Mon–Sun, 4 meals/day)
 
-```
-You: What's for lunch today?
-JARVIS: Today's lunch (12:00 PM – 2:00 PM) is looking solid:
-        Steamed Rice, Rajma Masala, Aloo Gobi Sabzi, Dal Tadka,
-        Chapati (3), Cucumber Raita, Papad, and Pickle. Fuel up! 🍛
+**`college_events`** — Event name, type, date, description, venue, organizer (19 events: hackathons, exams, assignments, workshops, cultural)
 
-You: Do I have any classes after 2 PM?
-JARVIS: Yes! You have Software Engineering Lab from 2:00 PM – 5:00 PM
-        in CS-LAB-1. Don't forget your lab record book.
-
-You: Any hackathons coming up?
-JARVIS: Three hackathons on the radar:
-        1. Hackathon 3.0 (July 5) — Smart Campus theme, ₹1.5L prizes
-        2. CodeStorm (July 20) — AI & Sustainability focus
-        3. BuildWith AWS (Aug 10) — Serverless/ML on AWS
-        Want me to help you pick one based on your skills?
-```
+**`college_calendar`** — Date, day type (Working Day / Official Holiday / Weekend), description (183 rows covering June–November 2025)
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 campusflow/
-├── .venv/              # Python 3.12 virtual environment
-├── app.py              # Main Streamlit application
-├── init_db.py          # Database initialization & seeding script
-├── campus.db           # SQLite database (auto-generated)
+├── app.py              # UI orchestrator — dashboard, chatbot, all page rendering
+├── auth.py             # Login and Register pages + session gate
+├── db.py               # All DB logic: connection, queries, LLM context builder
+├── init_db.py          # Schema creation + mock data seeding script
+├── campus.db           # SQLite database (generated by init_db.py)
+├── .env                # Credentials — GEMINI_API_KEY (not committed to git)
+├── .gitignore          # Excludes .env, .venv, campus.db, __pycache__
+├── requirements.txt    # Pinned dependencies
+├── .streamlit/
+│   └── config.toml     # Dark theme configuration
+├── WORKFLOW.md         # Full system architecture and AI orchestration guide
 └── README.md           # This file
 ```
 
 ---
 
-## 🔮 Roadmap (Post-Hackathon)
+## Setup and Run
 
-- [ ] Push notification for class reminders (5 min before)
-- [ ] Smart attendance predictor ("you need to attend 8 more classes to hit 75%")
-- [ ] Peer chat / study group matching
-- [ ] Faculty announcement feed integration
-- [ ] Mobile-first PWA wrapper
-- [ ] College ERP API integration (replace manual profile entry)
-- [ ] Multi-user support with login system
+### Prerequisites
+
+- Python 3.12
+- A Google Gemini API key — free at [aistudio.google.com](https://aistudio.google.com/)
+
+### 1. Install dependencies
+
+```bash
+.venv/bin/pip install -r requirements.txt
+```
+
+### 2. Configure your API key
+
+Add your Gemini API key to the `.env` file:
+
+```
+GEMINI_API_KEY=your_actual_key_here
+```
+
+Alternatively, paste it directly into the sidebar when the app is running.
+
+### 3. Initialize the database
+
+```bash
+.venv/bin/python3.12 init_db.py
+```
+
+This creates `campus.db` and seeds all tables with realistic mock data for three demo accounts.
+
+### 4. Launch the app
+
+```bash
+.venv/bin/streamlit run app.py
+```
+
+Open `http://localhost:8501` in your browser.
 
 ---
 
-## 🙏 Credits
+## Demo Accounts
 
-Built with ❤️ for the Amazon Hackathon.
-Powered by Google Gemini, Streamlit, and the vision that every student deserves a campus AI as smart as Jarvis.
+Three accounts are pre-seeded with distinct academic profiles for demonstration:
+
+| Username | Password | Department | Academic Profile |
+|---|---|---|---|
+| `alex` | `alex123` | CSE | Two subjects below 75% attendance (OS: 68%, Networks: 69%), average internals 71% |
+| `priya` | `priya123` | ECE | Strong attendance across all subjects, average internals 88% |
+| `rahul` | `rahul123` | MECH | Thermodynamics attendance at 70%, mixed marks performance |
 
 ---
 
-*"Any sufficiently advanced campus OS is indistinguishable from magic."*
+## How the AI Works
+
+BLACKY is not a generic chatbot. It is a retrieval-augmented assistant — before every Gemini API call, the backend runs SQL queries against the logged-in student's records and injects the results as structured context into the model prompt.
+
+```
+User message
+    → Intent detection (keyword matching)
+    → Targeted SQL queries (attendance, marks, leaves, timetable, mess, events)
+    → Context string assembled from real database rows
+    → Gemini receives: system prompt + context block + user question
+    → Response grounded in actual student data
+```
+
+When a student asks "Am I safe to take a leave this Friday?", the model receives their exact attendance counts per subject, their leave history, and the upcoming exam schedule. It does not estimate — it calculates.
+
+For the complete architecture breakdown, see [WORKFLOW.md](WORKFLOW.md).
+
+---
+
+## Example Conversations
+
+```
+You: Which subject is most at risk for attendance?
+
+BLACKY: Alex, your two subjects below the 75% cutoff are:
+  - Operating Systems: 26/38 classes attended (68.4%)
+  - Computer Networks: 25/36 classes attended (69.4%)
+
+  For OS, you need to attend the next 4 consecutive classes
+  to cross back above 75%. Missing any more will require a
+  formal attendance shortage application.
+
+---
+
+You: What are my internal marks looking like?
+
+BLACKY: Average across all internals: 71.0%
+
+  Stronger subjects:
+  - Database Management Systems: 82.0% avg
+  - Machine Learning: 85.0% avg
+
+  Needs attention:
+  - Operating Systems: 58.0% avg
+  - Computer Networks: 61.0% avg
+
+  Recommend focusing revision on OS and Networks before
+  the mid-semester on July 14.
+
+---
+
+You: What's for dinner tonight?
+
+BLACKY: Tonight's dinner (7:30 PM - 9:30 PM):
+  Chapati, Paneer Butter Masala, Steamed Rice,
+  Mixed Veg Dal, Gulab Jamun, and Salad.
+```
+
+---
+
+## Future Roadmap
+
+The detailed multi-phase roadmap is documented in [WORKFLOW.md](WORKFLOW.md). Key planned additions:
+
+- Attendance update UI and admin panel for faculty
+- PostgreSQL migration for concurrent multi-user production deployments
+- AWS deployment — ECS Fargate, RDS, Secrets Manager, ALB
+- Streaming Gemini responses for real-time feel
+- Proactive daily attendance alerts via scheduled jobs
+- GPA prediction model for target score calculations
+- Semantic search (embedding-based) to replace keyword intent detection
+- Gemini function calling — model decides which DB tools to invoke
+- College ERP integration to replace mock seeded data with live records
+
+---
+
+## Contributing
+
+This is a hackathon prototype. The codebase is intentionally lean — one database file, four Python modules, one config file. If you are extending it, keep that principle: add to the abstraction in `db.py` before adding SQL anywhere else, and keep all AI prompt logic in `query_blacky()` and `build_llm_context()`.
+
+---
+
+*CampusFlow v2.0 — built for the Amazon Hackathon.*
