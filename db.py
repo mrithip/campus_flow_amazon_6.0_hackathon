@@ -85,6 +85,18 @@ def get_today_schedule(dept: str, day: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_full_weekly_schedule(dept: str) -> list[dict]:
+    """Return the complete weekly timetable for a department, ordered by day then time."""
+    day_order = {"Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3,
+                 "Friday": 4, "Saturday": 5, "Sunday": 6}
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM timetables WHERE department=? ORDER BY day, time_slot",
+            (dept,)
+        ).fetchall()
+    return sorted([dict(r) for r in rows], key=lambda r: (day_order.get(r["day"], 9), r["time_slot"]))
+
+
 def get_next_class(dept: str, day: str, current_time: str) -> dict | None:
     for row in get_today_schedule(dept, day):
         try:
@@ -142,6 +154,19 @@ def get_all_meals_today(day: str) -> list[dict]:
             "SELECT * FROM mess_menu WHERE day=? ORDER BY id", (day,)
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_full_weekly_menu() -> list[dict]:
+    """Return the complete mess menu for all 7 days."""
+    order = {"Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3,
+             "Friday": 4, "Saturday": 5, "Sunday": 6}
+    meal_order = {"Breakfast": 0, "Lunch": 1, "Snacks": 2, "Dinner": 3}
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM mess_menu ORDER BY id").fetchall()
+    return sorted(
+        [dict(r) for r in rows],
+        key=lambda r: (order.get(r["day"], 9), meal_order.get(r["meal_type"], 9))
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -298,119 +323,135 @@ def apply_leave(user_id: int, leave_date: str, reason: str) -> tuple[bool, str]:
 
 def build_llm_context(user_msg: str, user: dict, day: str, time_str: str) -> str:
     """
-    Fetch all relevant records for the logged-in user and pack into a
-    structured context string for the Gemini model.
+    Assemble a complete, self-contained context block for the Gemini model.
+
+    Strategy: always include the student's full academic data and the
+    complete campus knowledge base (full weekly schedule, full weekly
+    mess menu, all events). The model must be able to answer any question
+    about any day, any meal, any future event — not just today.
+    Selective fetching is only used for attendance/marks/leaves (already
+    always included) and the current-day highlights at the top.
     """
-    msg   = user_msg.lower()
     uid   = user["id"]
     parts = []
 
-    # ── Identity ──
+    # ── 1. Identity + live context ──────────────────────────────────────────
     parts.append(
         f"STUDENT PROFILE:\n"
         f"  Name: {user['name']}\n"
         f"  Department: {user['department']} | Semester: {user['semester']}\n"
-        f"  Current Day: {day} | Time: {time_str}"
+        f"  Current Day: {day} | Current Time: {time_str}"
     )
 
-    # ── Attendance ──
-    att_records = get_attendance(uid)
-    if att_records:
-        overall = get_overall_attendance(uid)
-        low     = get_low_attendance(uid)
-        lines   = [f"  {r['subject_name']}: {r['classes_attended']}/{r['total_classes_conducted']} "
-                   f"({r['percentage']}%)" for r in att_records]
-        att_block = (
-            f"ATTENDANCE RECORDS (Overall: {overall}%):\n" + "\n".join(lines)
+    # ── 2. Today's quick snapshot (always useful as anchor) ──────────────────
+    next_cls  = get_next_class(user["department"], day, time_str)
+    curr_meal = get_current_meal(day, time_str)
+    snapshot_lines = []
+    if next_cls:
+        snapshot_lines.append(
+            f"  Next class today: {next_cls['subject']} at {next_cls['time_slot']} in {next_cls['room']}"
         )
-        if low:
-            att_block += "\n  [WARNING] Subjects below 75%: " + \
-                         ", ".join(f"{r['subject_name']} ({r['percentage']}%)" for r in low)
-        parts.append(att_block)
-
-    # ── Marks ──
-    marks = get_marks(uid)
-    if marks:
-        avg_int = get_average_internal_marks(uid)
-        m_lines = [f"  {r['subject_name']} [{r['exam_type']}]: "
-                   f"{r['marks_obtained']}/{r['total_marks']} ({r['percentage']}%)"
-                   for r in marks]
-        parts.append(
-            f"ACADEMIC MARKS (Avg internals: {avg_int}%):\n" + "\n".join(m_lines)
+    if curr_meal:
+        snapshot_lines.append(
+            f"  Current mess service: {curr_meal['meal_type']} ({curr_meal['time_window']})"
         )
+    if snapshot_lines:
+        parts.append("TODAY'S SNAPSHOT:\n" + "\n".join(snapshot_lines))
 
-    # ── Leaves ──
-    leaves = get_leaves(uid)
-    if leaves:
-        l_lines = [f"  {l['leave_date']} — {l['reason']} [{l['status']}]" for l in leaves]
-        parts.append("LEAVE HISTORY:\n" + "\n".join(l_lines))
-
-    # ── Timetable ──
-    if any(k in msg for k in ["class", "lecture", "schedule", "timetable",
-                               "subject", "room", "lab", "next"]):
-        sched = get_today_schedule(user["department"], day)
-        if sched:
-            s_lines = [f"  {r['time_slot']} | {r['subject']} | Room {r['room']}"
-                       for r in sched]
-            parts.append(f"TODAY'S {user['department']} SCHEDULE:\n" + "\n".join(s_lines))
-        else:
-            parts.append(f"No classes scheduled today for {user['department']}.")
-
-    # ── Mess menu ──
-    if any(k in msg for k in ["eat", "food", "menu", "mess", "breakfast",
-                               "lunch", "dinner", "snack", "meal"]):
-        if "breakfast" in msg:
-            meal = get_meal_by_type(day, "Breakfast")
-        elif "lunch" in msg:
-            meal = get_meal_by_type(day, "Lunch")
-        elif "dinner" in msg:
-            meal = get_meal_by_type(day, "Dinner")
-        elif "snack" in msg:
-            meal = get_meal_by_type(day, "Snacks")
-        else:
-            meal = get_current_meal(day, time_str)
-        if meal:
-            parts.append(
-                f"MESS — {meal['meal_type']} ({meal['time_window']}):\n  {meal['menu_items']}"
-            )
-        else:
-            all_meals = get_all_meals_today(day)
-            if all_meals:
-                m_lines = [f"  {m['meal_type']} ({m['time_window']}): {m['menu_items']}"
-                           for m in all_meals]
-                parts.append("TODAY'S MESS MENU:\n" + "\n".join(m_lines))
-
-    # ── Events / deadlines ──
-    if any(k in msg for k in ["event", "hackathon", "fest", "deadline", "exam",
-                               "assignment", "workshop", "seminar", "competition",
-                               "submit", "upcoming", "leave", "safe"]):
-        if "hackathon" in msg:
-            events = get_events_by_type("Hackathon")
-        elif "exam" in msg:
-            events = get_upcoming_exams(uid)
-            if not events:
-                events = get_events_by_type("Exam")
-        elif "assignment" in msg or "submit" in msg:
-            events = get_events_by_type("Assignment")
-        elif "workshop" in msg:
-            events = get_events_by_type("Workshop")
-        else:
-            events = get_upcoming_events(8)
-        if events:
-            e_lines = [
-                f"  [{e['event_type']}] {e['event_name']} — {e['due_date']}: "
-                f"{e['description'][:80]}"
-                for e in events
-            ]
-            parts.append("UPCOMING EVENTS / DEADLINES:\n" + "\n".join(e_lines))
-
-    # ── Calendar ──
+    # ── 3. College calendar entry for today ──────────────────────────────────
     today_str = datetime.now().strftime("%Y-%m-%d")
     cal = get_calendar_entry(today_str)
     if cal:
         parts.append(
-            f"COLLEGE CALENDAR: Today ({today_str}) is a "
-            f"{cal['day_type']} — {cal['description']}"
+            f"COLLEGE CALENDAR — TODAY ({today_str}):\n"
+            f"  {cal['day_type']} — {cal['description']}"
         )
+
+    # ── 4. Attendance records ────────────────────────────────────────────────
+    att_records = get_attendance(uid)
+    if att_records:
+        overall = get_overall_attendance(uid)
+        low     = get_low_attendance(uid)
+        lines   = [
+            f"  {r['subject_name']}: {r['classes_attended']}/{r['total_classes_conducted']} "
+            f"({r['percentage']}%)"
+            for r in att_records
+        ]
+        att_block = f"ATTENDANCE RECORDS (Overall: {overall}%):\n" + "\n".join(lines)
+        if low:
+            att_block += "\n  [WARNING] Subjects below 75%: " + \
+                         ", ".join(f"{r['subject_name']} ({r['percentage']}%)" for r in low)
+        parts.append(att_block)
+    else:
+        parts.append("ATTENDANCE RECORDS: No records found for this account yet.")
+
+    # ── 5. Academic marks ────────────────────────────────────────────────────
+    marks = get_marks(uid)
+    if marks:
+        avg_int = get_average_internal_marks(uid)
+        m_lines = [
+            f"  {r['subject_name']} [{r['exam_type']}]: "
+            f"{r['marks_obtained']}/{r['total_marks']} ({r['percentage']}%)"
+            for r in marks
+        ]
+        parts.append(f"ACADEMIC MARKS (Avg internals: {avg_int}%):\n" + "\n".join(m_lines))
+    else:
+        parts.append("ACADEMIC MARKS: No marks recorded yet.")
+
+    # ── 6. Leave history ─────────────────────────────────────────────────────
+    leaves = get_leaves(uid)
+    if leaves:
+        l_lines = [f"  {l['leave_date']} — {l['reason']} [{l['status']}]" for l in leaves]
+        parts.append("LEAVE HISTORY:\n" + "\n".join(l_lines))
+    else:
+        parts.append("LEAVE HISTORY: No leave applications on record.")
+
+    # ── 7. Full weekly timetable ─────────────────────────────────────────────
+    weekly = get_full_weekly_schedule(user["department"])
+    if weekly:
+        # Group by day for readability
+        from collections import defaultdict
+        by_day: dict[str, list] = defaultdict(list)
+        for r in weekly:
+            by_day[r["day"]].append(r)
+        day_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+        w_lines = []
+        for d in day_order:
+            if d in by_day:
+                w_lines.append(f"  {d}:")
+                for r in by_day[d]:
+                    w_lines.append(f"    {r['time_slot']} | {r['subject']} | Room {r['room']}")
+        parts.append(
+            f"FULL WEEKLY TIMETABLE — {user['department']}:\n" + "\n".join(w_lines)
+        )
+
+    # ── 8. Full weekly mess menu ──────────────────────────────────────────────
+    full_menu = get_full_weekly_menu()
+    if full_menu:
+        from collections import defaultdict as _dd
+        by_day_menu: dict[str, list] = _dd(list)
+        for r in full_menu:
+            by_day_menu[r["day"]].append(r)
+        menu_day_order = ["Monday", "Tuesday", "Wednesday", "Thursday",
+                          "Friday", "Saturday", "Sunday"]
+        menu_lines = []
+        for d in menu_day_order:
+            if d in by_day_menu:
+                menu_lines.append(f"  {d}:")
+                for m in by_day_menu[d]:
+                    menu_lines.append(
+                        f"    {m['meal_type']} ({m['time_window']}): {m['menu_items']}"
+                    )
+        parts.append("FULL WEEKLY MESS MENU:\n" + "\n".join(menu_lines))
+
+    # ── 9. All upcoming events and deadlines ──────────────────────────────────
+    all_events = get_upcoming_events(limit=50)   # fetch all — no arbitrary cap
+    if all_events:
+        e_lines = [
+            f"  [{e['event_type']}] {e['event_name']} — {e['due_date']} "
+            f"@ {e['venue']} | {e['description'][:100]}"
+            for e in all_events
+        ]
+        parts.append("ALL UPCOMING EVENTS & DEADLINES:\n" + "\n".join(e_lines))
 
     return "\n\n".join(parts)

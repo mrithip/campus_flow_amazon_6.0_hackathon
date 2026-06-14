@@ -21,7 +21,7 @@ Concrete examples of this principle in the product:
 
 Campus data is fragmented by design — timetables live on notice boards, marks on a separate ERP portal, mess menus on WhatsApp groups, events on physical posters. CampusFlow replaces this with a single local database that every feature reads from.
 
-The AI architecture follows the same principle. Instead of a complex vector retrieval pipeline, the backend uses intent detection (keyword matching) to run targeted SQL queries and packs the results as structured plaintext into the Gemini prompt. The model reasons over real numbers, never guesses. The entire pattern requires no external services, no vector store, and no fine-tuning.
+The AI architecture follows the same principle. Instead of a complex vector retrieval pipeline, the backend assembles a complete, self-contained campus knowledge block — full weekly timetable, full weekly mess menu, all upcoming events, and the student's personal academic records — and injects it into the Gemini prompt on every query. The model has everything it needs to answer any question about any day, any meal, or any future event without being told what to look for.
 
 ### Multi-Tenant, Secure Architecture — Scalability on AWS
 
@@ -48,8 +48,8 @@ The path to production AWS deployment is a straight line: containerize with Dock
 | Subject-wise attendance tracker | Per-subject counts, computed percentages, low-attendance flagging |
 | Academic marks panel | Internal-1, Internal-2 scores per subject with average internals computed |
 | Leave application system | Submit leave from sidebar, view history with approval status |
-| BLACKY — AI chatbot | Gemini 1.5 Flash with full academic context injection per query |
-| Smart context builder | Keyword intent detection routes each query to the correct DB tables |
+| BLACKY — AI chatbot | Gemini 1.5 Flash with full academic + campus context on every query |
+| Full-scope context builder | Every query receives the complete weekly timetable, full 7-day mess menu, and all campus events — BLACKY can answer about any day, any meal, any future event |
 | Tabbed detail panels | Schedule / Attendance / Marks / Leave History / Events in one view |
 | Environment credential loading | API key loaded from `.env` automatically; sidebar fallback for sessions |
 
@@ -194,18 +194,31 @@ Three accounts are pre-seeded with distinct academic profiles for demonstration:
 
 ## How the AI Works
 
-BLACKY is not a generic chatbot. It is a retrieval-augmented assistant — before every Gemini API call, the backend runs SQL queries against the logged-in student's records and injects the results as structured context into the model prompt.
+BLACKY is not a generic chatbot. It is a retrieval-augmented assistant — before every Gemini API call, the backend fetches the logged-in student's complete academic records and the full campus knowledge base from SQLite, then injects everything as structured context into the model prompt.
 
 ```
 User message
-    → Intent detection (keyword matching)
-    → Targeted SQL queries (attendance, marks, leaves, timetable, mess, events)
-    → Context string assembled from real database rows
-    → Gemini receives: system prompt + context block + user question
-    → Response grounded in actual student data
+    → SQL queries run unconditionally for all data sources
+    → Complete context assembled:
+        - Student profile + live day/time
+        - Today's quick snapshot (next class, current meal)
+        - Full attendance records per subject
+        - Full internal marks per subject
+        - Full leave history
+        - Full weekly timetable (all 6 days)
+        - Full weekly mess menu (all 7 days, all 4 meals)
+        - All upcoming events and deadlines (no limit)
+        - College calendar entry for today
+    → Gemini receives: system prompt + complete context + user question
+    → Response grounded entirely in real database data
 ```
 
-When a student asks "Am I safe to take a leave this Friday?", the model receives their exact attendance counts per subject, their leave history, and the upcoming exam schedule. It does not estimate — it calculates.
+Because BLACKY always has the complete picture, it can answer questions about any day or any future event — not just today:
+
+- "What's for dinner on Saturday?" — answered from the full weekly menu
+- "What classes do I have on Thursday?" — answered from the full weekly timetable
+- "When is Sports Day?" — answered from the complete events list
+- "Am I safe to take a leave this Friday?" — answered by cross-referencing attendance counts with upcoming classes and events
 
 For the complete architecture breakdown, see [WORKFLOW.md](WORKFLOW.md).
 
@@ -214,40 +227,55 @@ For the complete architecture breakdown, see [WORKFLOW.md](WORKFLOW.md).
 ## Example Conversations
 
 ```
+You: What classes do I have on Thursday?
+
+BLACKY: Alex, your Thursday CSE schedule:
+  - 09:00 AM  Machine Learning        CS-402
+  - 10:00 AM  Theory of Computation   CS-302
+  - 11:15 AM  Data Structures & Algo  CS-101
+  - 02:00 PM  Operating Systems       CS-204
+  - 03:00 PM  Networks Lab            CS-LAB-4
+
+---
+
+You: What's for dinner on Saturday?
+
+BLACKY: Saturday dinner (7:30 PM - 9:30 PM):
+  Chapati, Mutton Curry / Paneer Kofta, Jeera Rice,
+  Kadhi, Gajar Halwa, and Salad.
+
+---
+
+You: When is the next hackathon?
+
+BLACKY: Three hackathons coming up:
+  - Hackathon 3.0 — July 5  (Smart Campus, CS Innovation Hub)
+  - CodeStorm     — July 20 (AI & Sustainability, Online/Offline)
+  - BuildWith AWS — Aug 10  (Serverless/ML on AWS, Seminar Hall)
+
+---
+
 You: Which subject is most at risk for attendance?
 
 BLACKY: Alex, your two subjects below the 75% cutoff are:
-  - Operating Systems: 26/38 classes attended (68.4%)
-  - Computer Networks: 25/36 classes attended (69.4%)
+  - Operating Systems: 26/38 (68.4%) — need 4 more consecutive classes
+  - Computer Networks: 25/36 (69.4%) — need 2 more consecutive classes
 
-  For OS, you need to attend the next 4 consecutive classes
-  to cross back above 75%. Missing any more will require a
-  formal attendance shortage application.
-
----
-
-You: What are my internal marks looking like?
-
-BLACKY: Average across all internals: 71.0%
-
-  Stronger subjects:
-  - Database Management Systems: 82.0% avg
-  - Machine Learning: 85.0% avg
-
-  Needs attention:
-  - Operating Systems: 58.0% avg
-  - Computer Networks: 61.0% avg
-
-  Recommend focusing revision on OS and Networks before
-  the mid-semester on July 14.
+  Both have classes this Thursday. Attending all of them
+  is the fastest path back above the threshold.
 
 ---
 
-You: What's for dinner tonight?
+You: Am I safe to take a leave this Friday?
 
-BLACKY: Tonight's dinner (7:30 PM - 9:30 PM):
-  Chapati, Paneer Butter Masala, Steamed Rice,
-  Mixed Veg Dal, Gulab Jamun, and Salad.
+BLACKY: Not advisable, Alex. On Friday you have:
+  - Theory of Computation (09:00 AM)
+  - Computer Networks     (10:00 AM) ← already at 69.4%
+  - Machine Learning      (11:15 AM)
+
+  Missing Computer Networks would drop you to 66.7%,
+  which is 3 classes below the minimum. If you must take
+  leave, attend the Networks class at minimum.
 ```
 
 ---

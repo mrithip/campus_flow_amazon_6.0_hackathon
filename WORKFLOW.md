@@ -238,32 +238,44 @@ BLACKY is not a fine-tuned model. It is a **retrieval-augmented generation (RAG)
 User types message
       │
       ▼
-1. INTENT DETECTION (keyword matching in db.build_llm_context)
+1. UNCONDITIONAL DB FETCHES (all data sources queried regardless of query content)
       │
       ▼
-2. SELECTIVE DB FETCHES (only relevant tables queried)
+2. CONTEXT ASSEMBLY (complete structured plaintext block built from all results)
       │
       ▼
-3. CONTEXT ASSEMBLY (structured plaintext block built from query results)
+3. PROMPT CONSTRUCTION (system instruction + complete context + user question)
       │
       ▼
-4. PROMPT CONSTRUCTION (system instruction + context block + user question)
+4. GEMINI API CALL (stateful multi-turn chat)
       │
       ▼
-5. GEMINI API CALL (stateful multi-turn chat)
+5. RESPONSE RETURNED and appended to st.session_state.messages
       │
       ▼
-6. RESPONSE RETURNED and appended to st.session_state.messages
-      │
-      ▼
-7. st.rerun() — page rerenders with new message in chat history
+6. st.rerun() — page rerenders with new message in chat history
 ```
+
+### Why the context is always complete
+
+The previous version used keyword matching to selectively fetch data — only pulling the timetable if the user mentioned "class", only fetching the menu if they mentioned "lunch". This caused BLACKY to say "I only have today's data" when asked about future events, because those queries were never triggered.
+
+The current approach sends everything on every call:
+
+- Full weekly timetable (all 6 days, all slots for the student's department)
+- Full weekly mess menu (all 7 days, all 4 meals — 28 rows total)
+- All campus events and deadlines (no LIMIT cap, currently 19 events)
+- Student's complete attendance, marks, and leave records
+- Today's snapshot (next class, current meal) as a time anchor
+- College calendar entry for today
+
+The model has the complete picture and can answer any question — "What's for dinner on Saturday?", "When is Sports Day?", "What classes do I have on Thursday?" — without needing the question to contain specific trigger words.
 
 ### Why this is not a naive LLM call
 
-A naive implementation would send: `"system: you are a campus assistant"` + `"user: what's my attendance?"` and hope the model knows the answer. That produces hallucinations.
+A naive implementation would send only the system prompt and the user question and hope the model knows the answer. That produces hallucinations.
 
-CampusFlow's approach: before the model sees the question, the backend runs real SQL queries and packs the actual numbers into the prompt. The model's job is **reasoning and synthesis**, not recall.
+CampusFlow's approach: before the model sees the question, the backend runs real SQL queries and packs the actual numbers and schedules into the prompt. The model's job is **reasoning and synthesis over real data**, not recall from training.
 
 Example of what the model actually receives for the question *"Am I safe to take a leave this Friday?"*:
 
@@ -273,7 +285,14 @@ DATABASE CONTEXT:
 STUDENT PROFILE:
   Name: Alex Johnson
   Department: CSE | Semester: 5
-  Current Day: Sunday | Time: 03:45 PM
+  Current Day: Sunday | Current Time: 03:45 PM
+
+TODAY'S SNAPSHOT:
+  Next class today: Seminar / Guest Lecture at 09:00 AM - 10:00 AM in Seminar Hall
+  Current mess service: Lunch (12:00 PM - 02:00 PM)
+
+COLLEGE CALENDAR — TODAY (2025-06-22):
+  Working Day — Regular academic day
 
 ATTENDANCE RECORDS (Overall: 77.3%):
   Compiler Design: 30/38 (78.9%)
@@ -284,93 +303,110 @@ ATTENDANCE RECORDS (Overall: 77.3%):
   Operating Systems: 26/38 (68.4%)
   [WARNING] Subjects below 75%: Computer Networks (69.4%), Operating Systems (68.4%)
 
-LEAVE HISTORY:
-  2025-06-10 — Fever and cold — medical leave [Approved]
-  2025-06-18 — Family function out of city [Approved]
-  2025-06-25 — Doctor appointment — follow-up [Pending]
+ACADEMIC MARKS (Avg internals: 71.0%):
+  ... (all subjects and exam types)
 
-UPCOMING EVENTS / DEADLINES:
-  [Assignment] DSA Assignment Submission — 2025-06-25: Submit DSA assignment...
-  [Exam] Mid-Semester Examination (CSE) — 2025-07-14: Mid-semester exams...
+LEAVE HISTORY:
+  2025-06-10 — Fever and cold [Approved]
+  2025-06-18 — Family function [Approved]
+  2025-06-25 — Doctor appointment [Pending]
+
+FULL WEEKLY TIMETABLE — CSE:
+  Monday:
+    09:00 AM - 10:00 AM | Data Structures & Algorithms | CS-101
+    ...
+  Friday:
+    09:00 AM - 10:00 AM | Theory of Computation | CS-302
+    10:00 AM - 11:00 AM | Computer Networks | CS-305
+    11:15 AM - 12:15 PM | Machine Learning | CS-402
+    02:00 PM - 03:00 PM | Compiler Design | CS-303
+
+FULL WEEKLY MESS MENU:
+  Monday:
+    Breakfast (07:00 AM - 09:00 AM): Idli (3 pcs)...
+    ...
+  Saturday:
+    Dinner (07:30 PM - 09:30 PM): Chapati, Mutton Curry...
+
+ALL UPCOMING EVENTS & DEADLINES:
+  [Assignment] DSA Assignment Submission — 2025-06-25 @ Online (LMS Portal)
+  [Exam] Mid-Semester Examination (CSE) — 2025-07-14 @ Exam Halls A, B, C
+  ...all 19 events
 ---
 
 Question: Am I safe to take a leave this Friday?
 ```
 
-The model receives concrete numbers, not vague descriptions. It can calculate exactly how many more classes Alex can miss in Operating Systems before falling below the academic cutoff.
+The model receives the full Friday schedule, exact attendance counts, and the upcoming mid-semester exam date. It calculates precisely how many more classes Alex can miss in each subject and reasons about the risk.
 
 ---
 
 ## 8. The Context Builder — Core of the AI Engine
 
-`db.build_llm_context()` in `db.py` is the most important function in the system. It decides what data to fetch and how to structure it.
+`db.build_llm_context()` in `db.py` is the most important function in the system. It assembles a complete, self-contained knowledge block that is sent to Gemini on every chat message.
 
-### Always-included sections
+### Design principle: always-complete context
 
-Regardless of what the user asked, these are always included:
+The previous design used keyword detection to selectively include sections — timetable only if "class" appeared in the query, menu only if "food" appeared, events only if "hackathon" appeared. This caused BLACKY to answer narrowly and say "I only have today's data" for future-looking questions.
 
-- Student profile (name, department, semester, current day and time)
-- Full attendance records with computed percentages and a warning block if any subject is below 75%
-- Full academic marks with computed percentages and average internals
-- Full leave history
+The current design removes all conditional fetching for campus-wide data. Every query gets everything:
 
-These are always included because they are the "working memory" that makes BLACKY a personalized advisor rather than a generic assistant. Even if the user asks about lunch, BLACKY knows in the background that their OS attendance is 68%, and can weave that into an advisory note if relevant.
-
-### Conditionally-included sections
-
-These are only fetched when keyword matching detects relevance in the user's message:
-
-| Keywords detected | Section added |
-|---|---|
-| class, lecture, schedule, timetable, subject, room, lab, next | Today's department timetable |
-| eat, food, menu, mess, breakfast, lunch, dinner, snack, meal | Mess menu (specific meal or current) |
-| event, hackathon, deadline, exam, assignment, workshop, seminar, submit, safe, leave, upcoming | Upcoming events or department exams |
-
-This selective fetching keeps the context window focused. Sending the full mess menu, full timetable, and all 19 events on every single query would waste tokens and dilute the model's attention on what actually matters.
+| Section | What is sent | Rows |
+|---|---|---|
+| Student profile | Name, department, semester, current day/time | — |
+| Today's snapshot | Next class, current meal (time-anchored) | 0–2 |
+| College calendar | Today's day type and description | 0–1 |
+| Attendance records | All subjects with counts and percentages | varies |
+| Academic marks | All subjects, all exam types, computed % | varies |
+| Leave history | All leave dates, reasons, status | varies |
+| Full weekly timetable | All 6 days for the student's department | up to 25 |
+| Full weekly mess menu | All 7 days, all 4 meals | 28 |
+| All events & deadlines | Every event in college_events, no limit | 19+ |
 
 ### Context assembly order
 
 ```python
 parts = []
-parts.append(STUDENT_PROFILE)
-parts.append(ATTENDANCE_RECORDS)   # always
-parts.append(ACADEMIC_MARKS)       # always
-parts.append(LEAVE_HISTORY)        # always
-if schedule_keywords: parts.append(TIMETABLE)
-if food_keywords:     parts.append(MESS_MENU)
-if event_keywords:    parts.append(EVENTS)
-if calendar_entry:    parts.append(CALENDAR)
+parts.append(STUDENT_PROFILE + LIVE_DATETIME)        # always
+parts.append(TODAY_SNAPSHOT)                          # always — time anchor
+parts.append(CALENDAR_ENTRY)                          # always if date exists
+parts.append(ATTENDANCE_RECORDS)                      # always
+parts.append(ACADEMIC_MARKS)                          # always
+parts.append(LEAVE_HISTORY)                           # always
+parts.append(FULL_WEEKLY_TIMETABLE)                   # always — all 6 days
+parts.append(FULL_WEEKLY_MESS_MENU)                   # always — all 7 days
+parts.append(ALL_EVENTS)                              # always — no limit
 return "\n\n".join(parts)
 ```
 
-### System prompt design
+### New DB helpers added
 
-The system instruction sent to Gemini defines BLACKY's identity and behavioral constraints:
+Two new functions were added to `db.py` to support full-scope context:
+
+**`get_full_weekly_schedule(dept)`** — fetches all timetable rows for a department across all days, grouped and sorted Monday→Saturday. Replaces the old `get_today_schedule()` call in the context builder.
+
+**`get_full_weekly_menu()`** — fetches all 28 mess menu rows sorted Monday→Sunday, Breakfast→Dinner. Replaces the single-day, single-meal lookup that the old context builder used.
+
+### System prompt
+
+The system instruction was updated to explicitly tell BLACKY what it knows and what it must never claim:
 
 ```
-You are BLACKY, the AI assistant embedded in CampusFlow.
-You have COMPLETE ACCESS to the student's personal academic data:
-- Subject-wise attendance counts and percentages
-- Internal exam marks across all subjects
-- Leave history (dates, reasons, approval status)
-- Today's class schedule, mess menu, upcoming events and deadlines
+You have COMPLETE ACCESS to:
+- Full weekly class schedule (every day, not just today)
+- Full weekly mess menu (every day, every meal, not just today)
+- ALL upcoming campus events, hackathons, exams, deadlines and workshops
 
-Rules:
-- Answer using ONLY the DATABASE CONTEXT provided. Never fabricate data.
-- For attendance safety questions, calculate exactly:
-  classes_needed = ceil(0.75 * (total + future) - attended)
-- Format multi-item answers as short bullet lists.
-- If no records exist yet, gracefully guide the student.
-- Address the student by first name.
+Never say you only know about today — you have the full weekly data.
 ```
 
-The attendance safety formula is explicitly included in the system prompt because it is a specific calculation the model must perform correctly for the most common student query type.
+This prevents the model from hedging with "I only have today's information" when the context contains the full picture.
 
 ### Multi-turn conversation
 
 BLACKY maintains conversation context across turns. Before each API call, the full `st.session_state.messages` history (excluding the current message) is converted to Gemini's `{"role": "user"/"model", "parts": [...]}` format and passed as `history` to `model.start_chat()`.
 
-This means BLACKY remembers: *"You told me you were planning to skip Friday. Given that, your Computer Networks attendance would drop to 67.2%, which is 3 more classes below the cutoff."*
+This means BLACKY can chain reasoning across turns: *"You mentioned planning to skip Friday. Given that, your Computer Networks attendance would drop to 66.7%, which is 3 classes below the cutoff."*
 
 ---
 
@@ -389,13 +425,17 @@ Here is the complete journey of a single user message from keypress to rendered 
         └── Key exists → continue
 
 [4] db.build_llm_context(prompt, user, day_name, time_str)
-        ├── Fetches attendance_records WHERE user_id=?
-        ├── Fetches academic_marks WHERE user_id=?
-        ├── Fetches leave_applications WHERE user_id=?
-        ├── (conditional) Fetches timetables WHERE department=? AND day=?
-        ├── (conditional) Fetches mess_menu WHERE day=? [AND meal_type=?]
-        ├── (conditional) Fetches college_events or college_calendar
-        └── Returns structured plaintext context string
+        │
+        ├── get_attendance(user_id)              — all subjects
+        ├── get_marks(user_id)                   — all exam types
+        ├── get_leaves(user_id)                  — full history
+        ├── get_next_class(dept, day, time)       — today's anchor
+        ├── get_current_meal(day, time)           — today's anchor
+        ├── get_calendar_entry(today_iso)         — today's day type
+        ├── get_full_weekly_schedule(dept)        — ALL 6 days
+        ├── get_full_weekly_menu()                — ALL 7 days, 4 meals
+        └── get_upcoming_events(limit=50)         — ALL events, no cap
+        └── Returns structured plaintext context string (~3–5KB)
 
 [5] query_blacky(api_key, prompt, context, history)
         ├── genai.configure(api_key=api_key)
@@ -413,7 +453,7 @@ Here is the complete journey of a single user message from keypress to rendered 
         └── New user + BLACKY message pair appears in chat
 ```
 
-Total DB queries per chat message: typically 3–6 (always: attendance + marks + leaves; conditionally: timetable, mess, events). All queries are parameterized — no string interpolation in SQL, no SQL injection surface.
+Total DB queries per chat message: 9 fixed queries (no conditional logic). All queries are parameterized — no string interpolation in SQL, no SQL injection surface. The context payload is typically 3–5KB of plaintext, well within Gemini 1.5 Flash's context window.
 
 ---
 
@@ -442,12 +482,13 @@ These are known constraints of the current prototype that will be addressed in f
 | Limitation | Impact | Mitigation in place |
 |---|---|---|
 | SQLite is a file-level database with no concurrent write safety | Multiple simultaneous users editing data could cause write conflicts | `check_same_thread=False` allows read access; writes are low-frequency (only leave applications) |
-| Attendance and marks are seeded mock data | New registered users have no records; BLACKY cannot give attendance advice | Graceful empty-state handling in context builder and system prompt |
+| Attendance and marks are seeded mock data | New registered users have no records; BLACKY cannot give attendance advice | Graceful empty-state messages in context builder and system prompt |
 | Session state clears on browser close | User must log in again each visit | By design for the prototype; persistent sessions via server-side tokens planned |
 | API key stored in browser session | Key is not persisted securely beyond the session | `.env` file support provided as the recommended alternative |
 | Gemini API latency | Each chat response takes 1–3 seconds | `st.spinner()` provides feedback; streaming responses are a planned upgrade |
 | No attendance update UI | Students cannot update their own attendance counts | Admin panel and bulk import planned in Phase 3 |
 | Calendar only covers June–November 2025 | Queries outside this range return no calendar entry | Expanding to full academic year in next seed update |
+| Full context sent on every query (~3–5KB) | Slightly higher token usage compared to selective fetching | Negligible cost with Gemini 1.5 Flash pricing; improves answer quality for all query types |
 
 ---
 
@@ -479,7 +520,7 @@ These are known constraints of the current prototype that will be addressed in f
 
 - **GPA prediction model**: A lightweight regression model (scikit-learn, trained on historical mark patterns) that answers *"What do I need to score in the End-Semester exam to achieve a GPA of 8.5?"* with a calculated target score rather than a generic estimate
 
-- **Semantic search over context**: Replace keyword matching in `build_llm_context()` with an embedding-based retrieval step using `text-embedding-004` (Gemini). Student query → query embedding → cosine similarity against pre-embedded chunks of campus data → top-k chunks sent to the model. This handles paraphrases, typos, and complex multi-intent queries more robustly than keyword lists
+- **Semantic search upgrade**: The current approach sends the full context on every query, which works well for the current data size. As the campus dataset grows (more departments, more events, multi-year calendars), replace full-context injection with an embedding-based retrieval step using `text-embedding-004` (Gemini). Student query → query embedding → cosine similarity against pre-embedded chunks → top-k relevant chunks sent to the model. This keeps token usage bounded as data scales.
 
 - **Tool use / function calling**: Expose database functions as Gemini tool declarations. The model decides which tools to call based on the query, rather than the context builder deciding by keywords. This is the cleanest long-term architecture for the AI layer
 
