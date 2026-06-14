@@ -48,7 +48,7 @@ The path to production AWS deployment is a straight line: containerize with Dock
 | Subject-wise attendance tracker | Per-subject counts, computed percentages, low-attendance flagging |
 | Academic marks panel | Internal-1, Internal-2 scores per subject with average internals computed |
 | Leave application system | Submit leave from sidebar, view history with approval status |
-| BLACKY — AI chatbot | Gemini 1.5 Flash with full academic + campus context on every query |
+| BLACKY — AI chatbot | Gemini 2.5 Flash with full academic + campus context on every query |
 | Full-scope context builder | Every query receives the complete weekly timetable, full 7-day mess menu, and all campus events — BLACKY can answer about any day, any meal, any future event |
 | Tabbed detail panels | Schedule / Attendance / Marks / Leave History / Events in one view |
 | Environment credential loading | API key loaded from `.env` automatically; sidebar fallback for sessions |
